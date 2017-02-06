@@ -16,6 +16,10 @@ type NamedAccount struct {
 	Address string
 	Account horizon.Account
 }
+type SigningEntry struct {
+	Key string
+	weight uint32
+}
 
 func ClientEnv() *horizon.Client { return  horizon.DefaultTestNetClient }
 
@@ -23,19 +27,19 @@ func main() {
 	
 	var asset_name string = "MyGroupedSec" // Change this to the Name of the Asset to securitize
 	
-	var issuer_passphrase = "Issuer:I am the Issuer for the Assets!" // Change this to the issuer account!
-	// SBUVQZNOAMWC2PGHYJFQ64Q3YIXAPZLVE7THLKQKZQ26GETTUU5HJPC4
-	// GCHYVY63TJF3QRCWHGAHWIBTOEDPGRNUD65VSEINKWXV2MTMA6GOIJIL
+	var issuer_passphrase = "Issuer:I am the Asset Issuer!" // Change this to the issuer account!
+	// SDYPFDJH5AD7UFLLU3OX334YWNCDPOXFZIFAE4DIE72F3WSE76R2BYJQ
+	// GCBVL3SQFEVKRLP6AJ47UKKWYEBY45WHAJHCEZKVWMTGMCT4H4NKQYLH
 	var issuer_pair = MakePair(issuer_passphrase)
 		
-	var recipient_passphrase = "Recipient:I like having the Asset!" // Change this to an account that "holds" the asset!
-	// SDTS5LXOK67NWU6V2RUA7VNWLIEM5PKSTOF4QOJ7N7SBCRJI4VEKTNXW
-	// GDOIYHXFAWP4TBOT5VKIQAWK7D3RSELXYZXYFSSOU4ALPBQJ5WZPVIW7	
+	var recipient_passphrase = "Recipient:I am the Asset Holder!" // Change this to an account that "holds" the asset!
+	// SAFP43MHLANLI3QWF6F65BB4FTKACFSTOM7W7H7R6GAXRWQYYRAK5Q52
+	// GBB3EEK3KKPA7Z4NDW4ZZ5YKCRT5S7RTFZ5XIXHHNWNRLR2K77H6AFR3
 	var recipient_pair = MakePair(recipient_passphrase)
 	
 	var issue_passphrase = "AssetRep:" + issuer_pair.Address() + "/" + asset_name
-	// SDUN4EZFUNIQAQK4XAFTRKBBFKIGA2RPL4HB6KGQ2S56CN5QGD2S7IXM
-	// GCFHZ5KBVSF5GVMCXHTIZMYFDZ3KBK73ZRA354VT26W5Q6BX6HN2GGLP
+	// SAGK3AX7FGPIJ7N5SPLVAQA7SIPTPQ7LQIIVFVQDAWKF5A4E6XCHIXBY
+	// GBFT3FUYMS5Z5HUKPFENTHFJXUAAKGELGHJBLKBGX3X45OSDXVGZFMZB
 	var issue_pair = MakePair(issue_passphrase)
 
 	FundAccount(issuer_pair)
@@ -44,11 +48,15 @@ func main() {
 	FundAccount(recipient_pair)
 	set_trust(true, recipient_pair.Seed(), recipient_pair.Seed(), asset_name, issuer_pair.Address())
 	//set_trust(false, recipient_pair.Seed(), recipient_pair.Seed(), asset_name, issuer_pair.Address())
+	add_signer(issuer_pair.Seed(), issuer_pair.Seed(), recipient_pair.Address(), uint32(1))
 	
 	
+	issuer_acct := LoadAccount(issuer_pair.Address())
 	FundAccount(issue_pair)
-	log.Println("Adding signer " + issuer_pair.Address() + " to " + issue_pair.Address())
-	add_signer(issue_pair.Seed(), issue_pair.Seed(), issuer_pair.Address(), 10)
+	for _, signer := range issuer_acct.Account.Signers {
+		add_signer(issue_pair.Seed(), issue_pair.Seed(), signer.PublicKey, uint32(signer.Weight))
+	}
+	master_weight(issue_pair.Seed(), issue_pair.Seed(), 0)
 
 	test_tx(issuer_pair.Seed(), issuer_pair.Seed(), recipient_pair.Address(), issuer_pair.Address(), asset_name, "0.1")
 	
@@ -60,11 +68,10 @@ func main() {
 	//test_tx(recipient_pair.Seed(), recipient_pair.Seed(), issuer_pair.Address(), asset_name, "0.1")
 		
 	
-	issuer_acct := LoadAccount(issuer_pair.Address())
 	issue_acct := LoadAccount(issue_pair.Address())	
 	recipient_acct := LoadAccount(recipient_pair.Address())	
 	
-	PrintBalances([]NamedAccount{issuer_acct, issue_acct, recipient_acct})
+	PrintAccounts([]NamedAccount{issuer_acct, issue_acct, recipient_acct})
 }
 
 func set_trust(allow_trust bool, acct_seed string, signer string, asset_name string, issuer_acct string) {
@@ -144,12 +151,14 @@ func test_tx(from string, signer string, to string, issuer string, asset_name st
 }
 
 func add_signer(acct_seed string, signer string, change_signer string, weight uint32) {
+	log.Printf("Adding weight %d for signer %s to %s", weight, change_signer, acct_seed)
+	log.Println()
 	tx := b.Transaction(
 		b.SourceAccount{acct_seed},
         b.AutoSequence{ClientEnv()},
 		b.TestNetwork,
 		b.AddSigner(change_signer, weight),
-		b.MasterWeight(0),
+		//b.MasterWeight(0),
 		//b.InflationDest("GCT7S5BA6ZC7SV7GGEMEYJTWOBYTBOA7SC4JEYP7IAEDG7HQNIWKRJ4G"),
 		//b.SetAuthRequired(),
 		//b.SetAuthRevocable(),
@@ -160,6 +169,32 @@ func add_signer(acct_seed string, signer string, change_signer string, weight ui
 		//b.SetThresholds(2, 3, 4),
 		//b.HomeDomain("stellar.org"),
 		//b.RemoveSigner(remove_signer),
+	)
+
+	txe := tx.Sign(acct_seed)
+	txeB64, _ := txe.Base64()
+	
+	SubmitTxn(txeB64)
+}
+
+func master_weight(acct_seed string, signer string, weight uint32) {
+	log.Println("Reweighting Master Key to " + fmt.Sprint(weight))
+	tx := b.Transaction(
+		b.SourceAccount{acct_seed},
+        b.AutoSequence{ClientEnv()},
+		b.TestNetwork,
+		b.MasterWeight(weight),
+		//b.AddSigner(change_signer, weight),
+		//b.RemoveSigner(remove_signer),
+		//b.InflationDest("GCT7S5BA6ZC7SV7GGEMEYJTWOBYTBOA7SC4JEYP7IAEDG7HQNIWKRJ4G"),
+		//b.SetAuthRequired(),
+		//b.SetAuthRevocable(),
+		//b.SetAuthImmutable(),
+		//b.ClearAuthRequired(),
+		//b.ClearAuthRevocable(),
+		//b.ClearAuthImmutable(),
+		//b.SetThresholds(2, 3, 4),
+		//b.HomeDomain("stellar.org"),
 	)
 
 	txe := tx.Sign(acct_seed)
@@ -256,14 +291,17 @@ func FundAccount(pair *keypair.Full) {
 
 }
 
-func PrintBalances(accts []NamedAccount) {
+func PrintAccounts(accts []NamedAccount) {
 
 	for _, acct := range accts {
 		log.Println("Balances for account:", acct.Address)
-		//fmt.Println("Balances for account:", acct.Address)
-
 		for _, balance := range acct.Account.Balances {
 			log.Println(balance)
+		}
+
+		log.Println("Signers for account:", acct.Address)
+		for _, signer := range acct.Account.Signers {
+			log.Println(signer)
 		}
 	}
 }
